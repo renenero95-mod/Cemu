@@ -34,6 +34,8 @@ namespace CemuDiagV2
             const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - m_start).count();
             const uint64_t ns = static_cast<uint64_t>(elapsedNs);
+            if (ns > 100000000ULL)
+                cemuLog_log(LogType::Force, "[JIT SLOW] pc=0x{:08X} ms={}", m_ppcAddress, ns / 1000000ULL);
             g_jitCount.fetch_add(1, std::memory_order_relaxed);
             g_jitTotalNs.fetch_add(ns, std::memory_order_relaxed);
             uint64_t prevMax = g_jitMaxNs.load(std::memory_order_relaxed);

@@ -237,7 +237,9 @@ PPCRecFunction_t* PPCRecompiler_recompileFunction(PPCFunctionBoundaryTracker::PP
 	// generate intermediate code
 	ppcImlGenContext_t ppcImlGenContext = { 0 };
 	ppcImlGenContext.debug_entryPPCAddress = range.startAddress;
-	bool compiledSuccessfully = PPCRecompiler_generateIntermediateCode(ppcImlGenContext, ppcRecFunc, entryAddresses, boundaryTracker);
+	auto phaseStart = std::chrono::steady_clock::now();
+    bool compiledSuccessfully = PPCRecompiler_generateIntermediateCode(ppcImlGenContext, ppcRecFunc, entryAddresses, boundaryTracker);
+    uint64_t imlMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - phaseStart).count();
 	cemuLog_log(LogType::Force, "[PHASE] 0x{:08X} generateIML done ok={}", range.startAddress, compiledSuccessfully);
 	if (compiledSuccessfully == false)
 	{
@@ -258,7 +260,10 @@ PPCRecFunction_t* PPCRecompiler_recompileFunction(PPCFunctionBoundaryTracker::PP
 	}
 
 	// apply passes
-	if (!PPCRecompiler_ApplyIMLPasses(ppcImlGenContext))
+	phaseStart = std::chrono::steady_clock::now();
+    bool passesOk = PPCRecompiler_ApplyIMLPasses(ppcImlGenContext);
+    uint64_t passMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - phaseStart).count();
+    if (!passesOk)
 	{
 		delete ppcRecFunc;
 		return nullptr;
@@ -273,7 +278,13 @@ PPCRecFunction_t* PPCRecompiler_recompileFunction(PPCFunctionBoundaryTracker::PP
 		return nullptr;
 	}
 #elif defined(__aarch64__)
-	bool aarch64GenerationSuccess = PPCRecompiler_generateAArch64Code(ppcRecFunc, &ppcImlGenContext);
+	phaseStart = std::chrono::steady_clock::now();
+    bool aarch64GenerationSuccess = PPCRecompiler_generateAArch64Code(ppcRecFunc, &ppcImlGenContext);
+    uint64_t a64Ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - phaseStart).count();
+    
+    if (imlMs + passMs + a64Ms > 100)
+        cemuLog_log(LogType::Force, "[PHASE SLOW] pc=0x{:08X} IML={}ms Opt={}ms A64={}ms", range.startAddress, imlMs, passMs, a64Ms);
+
 	cemuLog_log(LogType::Force, "[PHASE] 0x{:08X} generateAArch64Code done ok={}", range.startAddress, aarch64GenerationSuccess);
 	if (aarch64GenerationSuccess == false)
 	{

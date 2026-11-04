@@ -328,8 +328,17 @@ PPCRecFunction_t* PPCRecompiler_recompileFunction(PPCFunctionBoundaryTracker::PP
 	return ppcRecFunc;
 }
 
-void PPCRecompiler_NativeRegisterAllocatorPass(ppcImlGenContext_t& ppcImlGenContext)
+bool PPCRecompiler_NativeRegisterAllocatorPass(ppcImlGenContext_t& ppcImlGenContext)
 {
+	size_t totalIML = 0;
+	for (auto* seg : ppcImlGenContext.segmentList2)
+		totalIML += seg->imlList.size();
+	if (totalIML > 8000)
+	{
+		cemuLog_log(LogType::Force, "[RA SKIP] function too large ({} IML), fallback to interpreter", totalIML);
+		return false;
+	}
+
 	IMLRegisterAllocatorParameters raParam;
 
 	for (auto& it : ppcImlGenContext.mappedRegs)
@@ -382,6 +391,7 @@ void PPCRecompiler_NativeRegisterAllocatorPass(ppcImlGenContext_t& ppcImlGenCont
 #endif
 
 	IMLRegisterAllocator_AllocateRegisters(&ppcImlGenContext, raParam);
+	return true;
 }
 
 bool PPCRecompiler_ApplyIMLPasses(ppcImlGenContext_t& ppcImlGenContext)
@@ -398,7 +408,8 @@ bool PPCRecompiler_ApplyIMLPasses(ppcImlGenContext_t& ppcImlGenContext)
 	IMLOptimizer_StandardOptimizationPass(ppcImlGenContext);
     auto t3 = std::chrono::steady_clock::now();
 
-	PPCRecompiler_NativeRegisterAllocatorPass(ppcImlGenContext);
+	if (!PPCRecompiler_NativeRegisterAllocatorPass(ppcImlGenContext))
+		return false;
     auto t4 = std::chrono::steady_clock::now();
 
     auto ms = [](auto a, auto b) { return std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count(); };

@@ -1700,6 +1700,7 @@ void PPCRecRA_followFlowAndExtendRanges(IMLRegisterAllocatorContext& ctx, IMLSeg
 
 void IMLRA_MergeCloseAbstractRanges(IMLRegisterAllocatorContext& ctx)
 {
+	auto startT = std::chrono::steady_clock::now();
 	for (size_t s = 0; s < ctx.deprGenContext->segmentList2.size(); s++)
 	{
 		IMLSegment* imlSegment = ctx.deprGenContext->segmentList2[s];
@@ -1707,6 +1708,10 @@ void IMLRA_MergeCloseAbstractRanges(IMLRegisterAllocatorContext& ctx)
 			continue; // not an entry/standalone segment
 		PPCRecRA_followFlowAndExtendRanges(ctx, imlSegment);
 	}
+
+	auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startT).count();
+	if (ms > 100)
+		cemuLog_log(LogType::Force, "[MERGE SLOW] {}ms ({} segments)", ms, ctx.deprGenContext->segmentList2.size());
 }
 
 void IMLRA_ExtendAbstractRangesOutOfLoops(IMLRegisterAllocatorContext& ctx)

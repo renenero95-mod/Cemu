@@ -301,52 +301,116 @@ namespace snd_user
 			_MIXChannelResetRmt(channel, i);
 	}
 
-	void _MIXControl_SetDevicePan(MixControl* control, int device_type, sint16 channels[])
+	void _MIXControl_SetDevicePan(
+		MixControl* control,
+		int device_type,
+		sint16 channels[])
 	{
-		const auto pandiff = 0x7F - control->pan;
-		const auto spandiff = 0x7F - control->span;
+		if (!control || !channels)
+		{
+			cemuLog_log(
+				LogType::Force,
+				"[MIX PAN] Invalid control/channels pointer"
+			);
+			return;
+		}
+
+		if (device_type != AX_DEV_TV &&
+			device_type != AX_DEV_DRC)
+		{
+			cemuLog_log(
+				LogType::Force,
+				"[MIX PAN] Invalid device type: {}",
+				device_type
+			);
+			return;
+		}
+
+		const uint32 pan =
+			control->pan < 0 ? 0 :
+			control->pan > 0x7F ? 0x7F :
+			static_cast<uint32>(control->pan);
+
+		const uint32 span =
+			control->span < 0 ? 0 :
+			control->span > 0x7F ? 0x7F :
+			static_cast<uint32>(control->span);
+
+		const uint32 pandiff = 0x7F - pan;
+		const uint32 spandiff = 0x7F - span;
 
 		if (device_type == AX_DEV_TV)
 		{
-			const uint32 sound_mode = g_snd_user_data.device_info.tv_sound_mode;
+			memset(
+				channels,
+				0,
+				sizeof(sint16) * AX_TV_CHANNEL_COUNT
+			);
+
+			const uint32 sound_mode =
+				g_snd_user_data.device_info.tv_sound_mode;
+
 			if (sound_mode == 3)
 			{
-				channels[0] = g_snd_user_data.pan_values_low[control->pan];
-				channels[1] = g_snd_user_data.pan_values_low[pandiff];
-				channels[2] = g_snd_user_data.pan_values_high[pandiff];
-				channels[3] = g_snd_user_data.pan_values_high[control->pan];
-				channels[4] = g_snd_user_data.pan_values_high[spandiff];
-				channels[5] = g_snd_user_data.pan_values_high[control->span];
+				channels[0] =
+					g_snd_user_data.pan_values_low[pan];
+
+				channels[1] =
+					g_snd_user_data.pan_values_low[pandiff];
+
+				channels[2] =
+					g_snd_user_data.pan_values_high[pandiff];
+
+				channels[3] =
+					g_snd_user_data.pan_values_high[pan];
+
+				channels[4] =
+					g_snd_user_data.pan_values_high[spandiff];
+
+				channels[5] =
+					g_snd_user_data.pan_values_high[span];
 			}
 			else if (sound_mode != 4)
 			{
-				channels[0] = g_snd_user_data.pan_values[control->pan];
-				channels[1] = g_snd_user_data.pan_values[pandiff];
+				channels[0] =
+					g_snd_user_data.pan_values[pan];
+
+				channels[1] =
+					g_snd_user_data.pan_values[pandiff];
+
 				channels[2] = 0;
 				channels[3] = 0;
-				channels[4] = g_snd_user_data.pan_values[spandiff];
-				channels[5] = g_snd_user_data.pan_values[control->span];
+
+				channels[4] =
+					g_snd_user_data.pan_values[spandiff];
+
+				channels[5] =
+					g_snd_user_data.pan_values[span];
 			}
 			else
 			{
-				uint32 pan = 0x7F;
-				if (((uint32)control->pan >> 1) < 0x7F)
-					pan = (uint32)control->pan >> 1;
+				uint32 p = pan >> 1;
 
-				channels[0] = g_snd_user_data.pan_values[pan] + g_snd_user_data.pan_values[spandiff];
+				if (p >= 0x7F)
+					p = 0x7F;
 
-				uint32 span = 0x7F;
-				if (((uint32)pandiff >> 1) < 0x7E)
-					span = (uint32)pandiff >> 1;
+				channels[0] =
+					g_snd_user_data.pan_values[p] +
+					g_snd_user_data.pan_values[spandiff];
 
-				channels[1] = g_snd_user_data.pan_values[span] + g_snd_user_data.pan_values[spandiff];
+				uint32 s = pandiff >> 1;
 
-				// TODO
+				if (s >= 0x7E)
+					s = 0x7F;
+
+				channels[1] =
+					g_snd_user_data.pan_values[s] +
+					g_snd_user_data.pan_values[spandiff];
 			}
 		}
 		else if (device_type == AX_DEV_DRC)
 		{
-			// TODO
+			// Preserve existing DRC implementation status.
 		}
 	}
 
@@ -766,11 +830,40 @@ namespace snd_user
 		cemu_assert_debug(voice);
 		cemu_assert_debug(control);
 
-		AXVoiceBegin(voice);
+		if (!voice || !control)
+		{
+			cemuLog_log(LogType::Force, "[MIX INIT] Null voice/control pointer");
+			return;
+		}
+
+		if (!g_snd_user_data.initialized || g_snd_user_data.max_voices <= 0)
+		{
+			cemuLog_log(LogType::Force, "[MIX INIT] Sound system not initialized");
+			return;
+		}
+
+		if (device_type >= AX_DEV_COUNT)
+			return;
+
+		if ((device_type == AX_DEV_TV && index != 0) ||
+			(device_type == AX_DEV_DRC && index >= AX_MAX_NUM_DRC) ||
+			(device_type == AX_DEV_RMT && index >= AX_MAX_NUM_RMT))
+		{
+			cemuLog_log(LogType::Force, "[MIX INIT] Invalid device index: {} / {}", device_type, index);
+			return;
+		}
 
 		const uint32 voice_index = voice->index;
-		auto& channel = g_snd_user_data.mix_channel[voice_index];
 
+		if (voice_index >= static_cast<uint32>(g_snd_user_data.max_voices))
+		{
+			cemuLog_log(LogType::Force, "[MIX INIT] Invalid voice index: {} max={}", voice_index, g_snd_user_data.max_voices);
+			return;
+		}
+
+		AXVoiceBegin(voice);
+
+		auto& channel = g_snd_user_data.mix_channel[voice_index];
 		channel.voice = voice;
 
 		if (device_type == AX_DEV_TV)

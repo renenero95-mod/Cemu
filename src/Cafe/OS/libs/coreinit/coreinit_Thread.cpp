@@ -12,6 +12,7 @@
 #include "util/helpers/Semaphore.h"
 #include "util/helpers/ConcurrentQueue.h"
 #include "util/Fiber/Fiber.h"
+#include "util/CemuThreadWatchdog.h"
 
 #include "util/helpers/helpers.h"
 
@@ -1390,12 +1391,20 @@ namespace coreinit
 		__OSLoadThread(hostThread->m_thread, hCPU, hostThread->selectedCore);
 		__OSThreadStartTimeslice(hostThread->m_thread, &hostThread->ppcInstance);
 		__OSUnlockScheduler(); // lock is always held when switching to a fiber, so we need to unlock it here
+#if CEMU_THREAD_WATCHDOG
+		// Confirms that execution reached the PPC fiber before its first timeslice.
+		CemuWatchdog::Touch(CemuWatchdog::Main, CemuWatchdog::Loop);
+#endif
 		while (true)
 		{
+#if CEMU_THREAD_WATCHDOG
+			// Heartbeat once per fiber timeslice.
+			CemuWatchdog::Touch(CemuWatchdog::Main, CemuWatchdog::Loop);
+#endif
 			if (hCPU->remainingCycles > 0)
 			{
 				// try to enter recompiler immediately
-				PPCRecompiler_attemptEnterWithoutRecompile(hCPU, hCPU->instructionPointer);
+				PPCRecompiler_attemptEnter(hCPU, hCPU->instructionPointer);
 				// keep executing as long as there are cycles left
 				while ((--hCPU->remainingCycles) >= 0)
 					PPCInterpreterSlim_executeInstruction(hCPU);

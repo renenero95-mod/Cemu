@@ -9,6 +9,62 @@
 
 // the system area is a block of memory that exists only in the emulator. It is used to simplify dynamic memory allocation for system data
 // this partially overlaps with the system heap from coreinit_SysHeap.cpp -> Use SysHeap for everything
+// ---------------------------------------------------------------------------
+// CemuFixer: low guest memory (0x00000000 - 0x00002000) guard
+// On a real Wii U (and on desktop Cemu, where this range is mapped as "MEM0")
+// a read through a NULL object pointer such as lwz r12,0x494(r3) with r3=0 does
+// not fault. If the host page behind guest address 0 is not readable (Android),
+// the same game code raises SIGSEGV. Make sure those pages exist.
+// ---------------------------------------------------------------------------
+#if defined(__linux__) || defined(__ANDROID__)
+#include <sys/mman.h>
+#include <unistd.h>
+#include <cerrno>
+
+static bool CemuFixer_IsHostByteReadable(const void* p)
+{
+    int fds[2];
+    if (pipe(fds) != 0)
+        return true;
+    const ssize_t r = write(fds[1], p, 1);
+    const bool readable = !(r < 0 && errno == EFAULT);
+    close(fds[0]);
+    close(fds[1]);
+    return readable;
+}
+
+static void CemuFixer_EnsureLowGuestMemory()
+{
+    if (!memory_base)
+        return;
+    const size_t pageSize = (size_t)sysconf(_SC_PAGESIZE);
+    size_t lowSize = 0x2000;
+    if (lowSize % pageSize)
+        lowSize += pageSize - (lowSize % pageSize);
+    bool allReadable = true;
+    for (size_t off = 0; off < lowSize; off += pageSize)
+    {
+        if (!CemuFixer_IsHostByteReadable(memory_base + off))
+        {
+            allReadable = false;
+            break;
+        }
+    }
+    if (allReadable)
+    {
+        cemuLog_log(LogType::Force, "[LOWMEM] guest 0x0-0x{:x} already readable, nothing to do", lowSize);
+        return;
+    }
+    void* res = mmap(memory_base, lowSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    if (res == MAP_FAILED)
+        cemuLog_log(LogType::Force, "[LOWMEM] guest 0x0-0x{:x} NOT readable and mmap failed (errno={})", lowSize, errno);
+    else
+        cemuLog_log(LogType::Force, "[LOWMEM] guest 0x0-0x{:x} was unmapped on host -> mapped zeroed RW pages (host={})", lowSize, (void*)res);
+}
+#else
+static void CemuFixer_EnsureLowGuestMemory() {}
+#endif
+
 MPTR sysAreaAllocatorOffset = 0;
 
 MPTR coreinit_allocFromSysArea(uint32 size, uint32 alignment)
@@ -633,6 +689,8 @@ namespace coreinit
 	void InitializeMEM()
 	{
         MEMResetToDefaultState();
+		CemuFixer_EnsureLowGuestMemory();
+
 
 		cafeExportRegister("coreinit", CoreInitDefaultHeap, LogType::CoreinitMem);
 

@@ -20,6 +20,9 @@
 #include "BackendAArch64/BackendAArch64.h"
 #endif
 #include "util/highresolutiontimer/HighResolutionTimer.h"
+#include "util/CemuProfiling.h"
+#include "util/CemuThreadWatchdog.h"
+#include "util/CemuDiagV2.h"
 
 #define PPCREC_FORCE_SYNCHRONOUS_COMPILATION	0 // if 1, then function recompilation will block and execute on the thread that called PPCRecompiler_visitAddressNoBlock
 #define PPCREC_LOG_RECOMPILATION_RESULTS		0
@@ -36,6 +39,7 @@ struct
 {
 	FSpinlock recompilerSpinlock;
 	std::queue<MPTR> targetQueue;
+	std::queue<MPTR> targetQueueHigh;  // priority queue for 0x0675 zone (main thread)
 	std::vector<PPCInvalidationRange> invalidationRanges;
 }PPCRecompilerState;
 
@@ -52,6 +56,21 @@ static std::mutex s_singleRecompilationMutex;
 #endif
 
 bool ppcRecompilerEnabled = false;
+
+namespace CemuDiagV2
+{
+    std::atomic<uint64_t> g_jitCount{0};
+    std::atomic<uint64_t> g_jitTotalNs{0};
+    std::atomic<uint64_t> g_jitMaxNs{0};
+    std::mutex g_jitTop5Mtx;
+    std::map<uint32_t, uint64_t> g_jitTop5Map;
+
+    std::atomic<uint64_t> g_vkDrawCount{0};
+    std::atomic<uint64_t> g_vkSubmitCount{0};
+    std::atomic<uint64_t> g_vkSubmitNs{0};
+    std::atomic<uint64_t> g_vkPresentCount{0};
+    std::atomic<uint64_t> g_vkPresentNs{0};
+}
 
 void PPCRecompiler_recompileAtAddress(uint32 address);
 
@@ -82,7 +101,11 @@ void PPCRecompiler_visitAddressNoBlock(uint32 enterAddress)
 		return;
 	// try to acquire lock
 	if (!PPCRecompilerState.recompilerSpinlock.try_lock())
+	{
+		if ((enterAddress & 0xFFFF0000u) == 0x06750000u)
+			cemuLog_log(LogType::Force, "[VISIT-0675] addr=0x{:08X} LOCK_FAILED", enterAddress);
 		return;
+	}
 	auto funcPtr = ppcRecompilerInstanceData->ppcRecompilerDirectJumpTable[enterAddress / 4];
 	if (funcPtr != PPCRecompiler_leaveRecompilerCode_unvisited)
 	{
@@ -91,7 +114,15 @@ void PPCRecompiler_visitAddressNoBlock(uint32 enterAddress)
 		return;
 	}
 	// add to recompilation queue and flag as visited
-	PPCRecompilerState.targetQueue.emplace(enterAddress);
+	if (enterAddress >= 0x06700000u && enterAddress < 0x06800000u)
+	{
+		PPCRecompilerState.targetQueueHigh.emplace(enterAddress);
+		cemuLog_log(LogType::Force, "[VISIT-067X] addr=0x{:08X} QUEUED_HIGH size_high={}", enterAddress, PPCRecompilerState.targetQueueHigh.size());
+	}
+	else
+	{
+		PPCRecompilerState.targetQueue.emplace(enterAddress);
+	}
 	ppcRecompilerInstanceData->ppcRecompilerDirectJumpTable[enterAddress / 4] = PPCRecompiler_leaveRecompilerCode_visited;
 
 	PPCRecompilerState.recompilerSpinlock.unlock();
@@ -148,6 +179,8 @@ void PPCRecompiler_attemptEnter(PPCInterpreter_t* hCPU, uint32 enterAddress)
 	cemu_assert_debug(hCPU->instructionPointer == enterAddress);
 	if (ppcRecompilerEnabled == false)
 		return;
+	if ((enterAddress & 0xFFFF0000u) == 0x06750000u)
+		cemuLog_log(LogType::Force, "[ATTEMPT-0675] addr=0x{:08X} rc={} en={}", enterAddress, hCPU->remainingCycles, ppcRecompilerEnabled);
 	if (hCPU->remainingCycles <= 0)
 		return;
 	auto funcPtr = ppcRecompilerInstanceData->ppcRecompilerDirectJumpTable[enterAddress / 4];
@@ -166,6 +199,13 @@ bool PPCRecompiler_ApplyIMLPasses(ppcImlGenContext_t& ppcImlGenContext);
 
 PPCRecFunction_t* PPCRecompiler_recompileFunction(PPCFunctionBoundaryTracker::PPCRange_t range, std::set<uint32>& entryAddresses, std::vector<std::pair<MPTR, uint32>>& entryPointsOut, PPCFunctionBoundaryTracker& boundaryTracker)
 {
+#if CEMU_THREAD_WATCHDOG
+    CemuWatchdog::Touch(CemuWatchdog::Recompiler, CemuWatchdog::Compile);
+#endif
+#if CEMU_PROFILING
+    CemuProfiling::ScopedTimer profilingTimer(CemuProfiling::Recompiler());
+#endif
+    CemuDiagV2::ScopedJitTimer diagJitTimer(range.startAddress);
 	if (range.startAddress >= PPC_REC_CODE_AREA_END)
 	{
 		cemuLog_log(LogType::Force, "Attempting to recompile function outside of allowed code area");
@@ -198,6 +238,7 @@ PPCRecFunction_t* PPCRecompiler_recompileFunction(PPCFunctionBoundaryTracker::PP
 	ppcImlGenContext_t ppcImlGenContext = { 0 };
 	ppcImlGenContext.debug_entryPPCAddress = range.startAddress;
 	bool compiledSuccessfully = PPCRecompiler_generateIntermediateCode(ppcImlGenContext, ppcRecFunc, entryAddresses, boundaryTracker);
+	cemuLog_log(LogType::Force, "[PHASE] 0x{:08X} generateIML done ok={}", range.startAddress, compiledSuccessfully);
 	if (compiledSuccessfully == false)
 	{
 		delete ppcRecFunc;
@@ -222,6 +263,7 @@ PPCRecFunction_t* PPCRecompiler_recompileFunction(PPCFunctionBoundaryTracker::PP
 		delete ppcRecFunc;
 		return nullptr;
 	}
+	cemuLog_log(LogType::Force, "[PHASE] 0x{:08X} applyIMLPasses done", range.startAddress);
 
 #if defined(ARCH_X86_64)
 	// emit x64 code
@@ -232,6 +274,7 @@ PPCRecFunction_t* PPCRecompiler_recompileFunction(PPCFunctionBoundaryTracker::PP
 	}
 #elif defined(__aarch64__)
 	bool aarch64GenerationSuccess = PPCRecompiler_generateAArch64Code(ppcRecFunc, &ppcImlGenContext);
+	cemuLog_log(LogType::Force, "[PHASE] 0x{:08X} generateAArch64Code done ok={}", range.startAddress, aarch64GenerationSuccess);
 	if (aarch64GenerationSuccess == false)
 	{
 		return nullptr;
@@ -395,12 +438,21 @@ bool PPCRecompiler_makeRecompiledFunctionActive(uint32 initialEntryPoint, PPCFun
 	// therefore we reset all addresses that are still marked as visited (but not recompiled)
 	// we dont remove the points from the queue but any address thats not marked as visited won't get recompiled
 	// if they are reachable, the interpreter will queue them again
+	if (range.startAddress <= 0x0675FFFFu && (range.startAddress + range.length) >= 0x06750000u)
+		cemuLog_log(LogType::Force, "[MAKE-ACTIVE-CONTAINS-0675] start=0x{:08X} len=0x{:X} end=0x{:08X}", range.startAddress, range.length, range.startAddress + range.length);
+	uint32 resetCount0675 = 0;
 	for (uint32 v = range.startAddress; v <= (range.startAddress + range.length); v += 4)
 	{
 		auto funcPtr = ppcRecompilerInstanceData->ppcRecompilerDirectJumpTable[v / 4];
 		if (funcPtr == PPCRecompiler_leaveRecompilerCode_visited)
+		{
 			ppcRecompilerInstanceData->ppcRecompilerDirectJumpTable[v / 4] = PPCRecompiler_leaveRecompilerCode_unvisited;
+			if ((v & 0xFFFF0000u) == 0x06750000u)
+				resetCount0675++;
+		}
 	}
+	if (resetCount0675 > 0)
+		cemuLog_log(LogType::Force, "[RESET-0675] reset {} entries in range 0x{:08X}-0x{:08X}", resetCount0675, range.startAddress, range.startAddress + range.length);
 
 	// register ranges
 	for (auto& r : ppcRecFunc->list_ranges)
@@ -416,6 +468,7 @@ bool PPCRecompiler_makeRecompiledFunctionActive(uint32 initialEntryPoint, PPCFun
 void PPCRecompiler_recompileAtAddress(uint32 address)
 {
 	cemu_assert_debug(ppcRecompilerInstanceData->ppcRecompilerDirectJumpTable[address / 4] == PPCRecompiler_leaveRecompilerCode_visited);
+	cemuLog_log(LogType::Force, "[RECOMPILE] addr=0x{:08X}", address);
 
 	// get size
 	PPCFunctionBoundaryTracker funcBoundaries;
@@ -451,9 +504,97 @@ void PPCRecompiler_recompileAtAddress(uint32 address)
 std::thread s_threadRecompiler;
 std::atomic_bool s_recompilerThreadStopSignal{false};
 
+
+#if CEMU_PROFILING
+static void PPCRecompiler_profileReportIfDue()
+{
+    using namespace CemuProfiling;
+    static auto lastReport = Clock::now();
+    const auto now = Clock::now();
+    const double seconds = std::chrono::duration<double>(now - lastReport).count();
+    if (seconds < 5.0)
+        return;
+    lastReport = now;
+
+    const auto itp = Interpreter().TakeSnapshot();
+    const auto hle = HLE().TakeSnapshot();
+    const auto rec = Recompiler().TakeSnapshot();
+    const auto fiber = FiberTimeslice().TakeSnapshot();
+    const auto draws = Drawcalls().TakeSnapshot();
+    const auto pipelines = PipelineChanges().TakeSnapshot();
+    const auto sleepWait = ThreadSleepWait().TakeSnapshot();
+    const auto joinWait = ThreadJoinWait().TakeSnapshot();
+    const auto queueWait = ThreadQueueWait().TakeSnapshot();
+    const auto submit = VulkanSubmit().TakeSnapshot();
+    const auto present = VulkanPresent().TakeSnapshot();
+    const auto fence = VulkanFenceWait().TakeSnapshot();
+    const auto audio = AudioUpdate().TakeSnapshot();
+    const auto audioLock = AudioMutexWait().TakeSnapshot();
+
+    const auto rate = [seconds](uint64_t value) { return static_cast<double>(value) / seconds; };
+    const auto avgMs = [](const Counter::Snapshot& s) {
+        return s.calls ? (static_cast<double>(s.nanoseconds) / 1000000.0) / s.calls : 0.0;
+    };
+
+    cemuLog_log(LogType::Force,
+        "[PROFILE 5s] PPC interp={} instr/s ({:.2f} ms total); HLE={} calls/s avg={:.3f} ms; "
+        "JIT={} funcs/s avg={:.3f} ms; fiber={} instr/s avgSlice={:.3f} ms; "
+        "GX2 drawcalls={} /s; pipelineBinds={} /s; "
+        "threadWait sleep={} /s avg={:.3f} ms join={} /s avg={:.3f} ms queue={} /s avg={:.3f} ms; "
+        "vkSubmit={} /s avg={:.3f} ms; "
+        "vkPresent={} /s avg={:.3f} ms; fenceWait={} /s avg={:.3f} ms; "
+        "AXUpdate={} /s avg={:.3f} ms; AXMutexWait={} /s avg={:.3f} ms",
+        rate(itp.items), static_cast<double>(itp.nanoseconds) / 1000000.0,
+        rate(hle.calls), avgMs(hle),
+        rate(rec.calls), avgMs(rec),
+        rate(fiber.items), avgMs(fiber),
+        rate(draws.items), rate(pipelines.items),
+        rate(sleepWait.calls), avgMs(sleepWait),
+        rate(joinWait.calls), avgMs(joinWait),
+        rate(queueWait.calls), avgMs(queueWait),
+        rate(submit.calls), avgMs(submit),
+        rate(present.calls), avgMs(present),
+        rate(fence.calls), avgMs(fence),
+        rate(audio.calls), avgMs(audio),
+        rate(audioLock.calls), avgMs(audioLock));
+
+    const uint64_t diagJitCount = CemuDiagV2::g_jitCount.exchange(0, std::memory_order_relaxed);
+    const uint64_t diagJitTotalNs = CemuDiagV2::g_jitTotalNs.exchange(0, std::memory_order_relaxed);
+    const uint64_t diagJitMaxNs = CemuDiagV2::g_jitMaxNs.exchange(0, std::memory_order_relaxed);
+    const double diagJitAvgMs = diagJitCount ? (static_cast<double>(diagJitTotalNs) / 1000000.0) / diagJitCount : 0.0;
+    const double diagJitMaxMs = static_cast<double>(diagJitMaxNs) / 1000000.0;
+    cemuLog_log(LogType::Force, "[JIT] n={} avg={:.3f}ms max={:.3f}ms",
+        diagJitCount, diagJitAvgMs, diagJitMaxMs);
+
+    std::vector<std::pair<uint32_t, uint64_t>> diagTop5;
+    {
+        std::lock_guard<std::mutex> lock(CemuDiagV2::g_jitTop5Mtx);
+        diagTop5.assign(CemuDiagV2::g_jitTop5Map.begin(), CemuDiagV2::g_jitTop5Map.end());
+        CemuDiagV2::g_jitTop5Map.clear();
+    }
+    std::sort(diagTop5.begin(), diagTop5.end(),
+        [](const auto& a, const auto& b) { return a.second > b.second; });
+    for (size_t i = 0; i < diagTop5.size() && i < 5; ++i)
+        cemuLog_log(LogType::Force, "[JIT TOP] rank={} pc=0x{:08X} count={}",
+            i, diagTop5[i].first, diagTop5[i].second);
+
+    const uint64_t diagVkDraw     = CemuDiagV2::g_vkDrawCount.exchange(0, std::memory_order_relaxed);
+    const uint64_t diagVkSubmit   = CemuDiagV2::g_vkSubmitCount.exchange(0, std::memory_order_relaxed);
+    const uint64_t diagVkSubmitNs = CemuDiagV2::g_vkSubmitNs.exchange(0, std::memory_order_relaxed);
+    const uint64_t diagVkPresent  = CemuDiagV2::g_vkPresentCount.exchange(0, std::memory_order_relaxed);
+    const uint64_t diagVkPresentNs= CemuDiagV2::g_vkPresentNs.exchange(0, std::memory_order_relaxed);
+    cemuLog_log(LogType::Force,
+        "[VK FLOW] draw={} submit={} submit_ns={} present={} present_ns={}",
+        diagVkDraw, diagVkSubmit, diagVkSubmitNs, diagVkPresent, diagVkPresentNs);
+}
+#endif
+
 void PPCRecompiler_thread()
 {
 	SetThreadName("PPCRecompiler");
+    cemuLog_log(LogType::Force, "[WATCHDOG CALLSITE] PPCRecompiler_thread reached");
+    const bool watchdogStarted = CemuWatchdog::Start();
+    cemuLog_log(LogType::Force, "[WATCHDOG CALLSITE] Start returned {}", watchdogStarted);
 #if PPCREC_FORCE_SYNCHRONOUS_COMPILATION
 	return;
 #endif
@@ -462,21 +603,46 @@ void PPCRecompiler_thread()
 	{
         if(s_recompilerThreadStopSignal)
             return;
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		#if CEMU_THREAD_WATCHDOG
+        CemuWatchdog::Touch(CemuWatchdog::Recompiler, CemuWatchdog::Sleep);
+#endif
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+#if CEMU_PROFILING
+        PPCRecompiler_profileReportIfDue();
+#endif
 		// asynchronous recompilation:
 		// 1) take address from queue
 		// 2) check if address is still marked as visited
 		// 3) if yes -> calculate size, gather all entry points, recompile and update jump table
+		uint32 popInThisBatch = 0;
+		constexpr uint32 MAX_POP_PER_BATCH = 64;
 		while (true)
 		{
+			if (popInThisBatch >= MAX_POP_PER_BATCH)
+				break;
+			popInThisBatch++;
 			PPCRecompilerState.recompilerSpinlock.lock();
-			if (PPCRecompilerState.targetQueue.empty())
+			MPTR enterAddress = 0;
+			if (!PPCRecompilerState.targetQueueHigh.empty())
+			{
+				enterAddress = PPCRecompilerState.targetQueueHigh.front();
+				PPCRecompilerState.targetQueueHigh.pop();
+			}
+			else if (!PPCRecompilerState.targetQueue.empty())
+			{
+				enterAddress = PPCRecompilerState.targetQueue.front();
+				PPCRecompilerState.targetQueue.pop();
+			}
+			else
 			{
 				PPCRecompilerState.recompilerSpinlock.unlock();
 				break;
 			}
-			auto enterAddress = PPCRecompilerState.targetQueue.front();
-			PPCRecompilerState.targetQueue.pop();
+			if (enterAddress >= 0x06700000u && enterAddress < 0x06800000u)
+				cemuLog_log(LogType::Force, "[POP-067X] addr=0x{:08X} size_high={} size_low={}", enterAddress, PPCRecompilerState.targetQueueHigh.size(), PPCRecompilerState.targetQueue.size());
+			static std::atomic<uint32> popCount{0};
+			if ((popCount.fetch_add(1, std::memory_order_relaxed) % 1000) == 0)
+				cemuLog_log(LogType::Force, "[QUEUE] size_high={} size_low={} total_pop={}", PPCRecompilerState.targetQueueHigh.size(), PPCRecompilerState.targetQueue.size(), popCount.load());
 
 			auto funcPtr = ppcRecompilerInstanceData->ppcRecompilerDirectJumpTable[enterAddress / 4];
 			if (funcPtr != PPCRecompiler_leaveRecompilerCode_visited)
@@ -611,6 +777,8 @@ void PPCRecompiler_invalidateRange(uint32 startAddr, uint32 endAddr)
 		return;
 	if (startAddr >= PPC_REC_CODE_AREA_SIZE)
 		return;
+	if (startAddr <= 0x0675FFFFu && endAddr >= 0x06750000u)
+		cemuLog_log(LogType::Force, "[INVALIDATE-0675] start=0x{:08X} end=0x{:08X}", startAddr, endAddr);
 	cemu_assert_debug(endAddr >= startAddr);
 
 	PPCRecompilerState.recompilerSpinlock.lock();
@@ -733,6 +901,8 @@ void PPCRecompiler_Shutdown()
     // clean up queues
     while(!PPCRecompilerState.targetQueue.empty())
         PPCRecompilerState.targetQueue.pop();
+    while(!PPCRecompilerState.targetQueueHigh.empty())
+        PPCRecompilerState.targetQueueHigh.pop();
     PPCRecompilerState.invalidationRanges.clear();
     // clean range store
     rangeStore_ppcRanges.clear();

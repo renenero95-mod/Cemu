@@ -1975,6 +1975,16 @@ bool PPCRecompiler_decodePPCInstruction(ppcImlGenContext_t* ppcImlGenContext)
 				break;
 			}
 			break;
+		case 6: // PSQ_LX
+			if (!PPCRecompilerImlGen_PSQ_LX(ppcImlGenContext, opcode))
+				unsupportedInstructionFound = true;
+			ppcImlGenContext->hasFPUInstruction = true;
+			break;
+		case 7: // PSQ_STX
+			if (!PPCRecompilerImlGen_PSQ_STX(ppcImlGenContext, opcode))
+				unsupportedInstructionFound = true;
+			ppcImlGenContext->hasFPUInstruction = true;
+			break;
 		case 8: //Sub category - move/negate
 			switch (PPC_getBits(opcode, 25, 5))
 			{
@@ -2973,7 +2983,10 @@ bool PPCIMLGen_FillBasicBlock(ppcImlGenContext_t& ppcImlGenContext, PPCBasicBloc
 
 		if (PPCRecompiler_decodePPCInstruction(&ppcImlGenContext))
 		{
-			cemuLog_logDebug(LogType::Force, "PPCRecompiler: Unsupported instruction at 0x{:08x}", addressOfCurrentInstruction);
+			const uint32 rawOpcode = *(ppcImlGenContext.currentInstruction - 1);
+			const uint32 opcode = CPU_swapEndianU32(rawOpcode);
+			const uint32 primary = (opcode >> 26) & 0x3F;
+			cemuLog_log(LogType::Force, "[PPCREC UNSUPPORTED] PC=0x{:08X} RAW=0x{:08X} OPCODE=0x{:08X} PRIMARY={}", addressOfCurrentInstruction, rawOpcode, opcode, primary);
 			ppcImlGenContext.currentOutputSegment = nullptr;
 			return false;
 		}

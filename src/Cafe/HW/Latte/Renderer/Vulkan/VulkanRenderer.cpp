@@ -1,4 +1,5 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
+#include "util/CemuDiagV2.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/LatteTextureVk.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.h"
@@ -2180,7 +2181,31 @@ void VulkanRenderer::WaitForNextFinishedCommandBuffer()
 {
 	cemu_assert_debug(m_commandBufferSyncIndex != m_commandBufferIndex);
 	// wait on least recently submitted command buffer
-	VkResult result = vkWaitForFences(m_logicalDevice, 1, &m_cmd_buffer_fences[m_commandBufferSyncIndex], true, UINT64_MAX);
+	VkResult result;
+
+const auto fenceDiagStart = std::chrono::steady_clock::now();
+
+result = vkWaitForFences(
+    m_logicalDevice,
+    1,
+    &m_cmd_buffer_fences[m_commandBufferSyncIndex],
+    true,
+    UINT64_MAX
+);
+
+const auto fenceDiagEnd = std::chrono::steady_clock::now();
+
+const auto fenceDiagMs =
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+        fenceDiagEnd - fenceDiagStart
+    ).count();
+
+cemuLog_log(
+    LogType::Force,
+    "[FENCE DIAG] vkWaitForFences returned result={} duration={}ms",
+    static_cast<sint32>(result),
+    static_cast<long long>(fenceDiagMs)
+);
 	if (result == VK_TIMEOUT)
 	{
 		cemuLog_log(LogType::Force, "vkWaitForFences: Returned VK_TIMEOUT on infinite fence");
@@ -2195,6 +2220,10 @@ void VulkanRenderer::WaitForNextFinishedCommandBuffer()
 
 void VulkanRenderer::SubmitCommandBuffer(VkSemaphore signalSemaphore, VkSemaphore waitSemaphore)
 {
+#if CEMU_THREAD_WATCHDOG
+    CemuWatchdog::Touch(CemuWatchdog::Renderer, CemuWatchdog::Loop);
+#endif
+	CemuDiagV2::g_vkSubmitCount.fetch_add(1, std::memory_order_relaxed);
 	draw_endRenderPass();
 
 	occlusionQuery_notifyEndCommandBuffer();
@@ -2233,7 +2262,9 @@ void VulkanRenderer::SubmitCommandBuffer(VkSemaphore signalSemaphore, VkSemaphor
 	submitInfo.pWaitDstStageMask = semWaitStageMask;
 	submitInfo.pWaitSemaphores = waitSemArray;
 
+	const auto diagSubmitStart = std::chrono::steady_clock::now();
 	const VkResult result = vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, m_cmd_buffer_fences[m_commandBufferIndex]);
+	CemuDiagV2::g_vkSubmitNs.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - diagSubmitStart).count()), std::memory_order_relaxed);
 	if (result != VK_SUCCESS)
 		UnrecoverableError(fmt::format("failed to submit command buffer. Error {}", result).c_str());
 	m_numSubmittedCmdBuffers++;
@@ -3072,6 +3103,10 @@ bool VulkanRenderer::UpdateSwapchainProperties(bool mainWindow)
 
 void VulkanRenderer::SwapBuffer(bool mainWindow)
 {
+#if CEMU_THREAD_WATCHDOG
+    CemuWatchdog::Touch(CemuWatchdog::Renderer, CemuWatchdog::Present);
+#endif
+	CemuDiagV2::g_vkPresentCount.fetch_add(1, std::memory_order_relaxed);
 	if(!AcquireNextSwapchainImage(mainWindow))
 		return;
 
@@ -3126,7 +3161,13 @@ void VulkanRenderer::SwapBuffer(bool mainWindow)
 		}
 	}
 
+	const auto diagPresentStart = std::chrono::steady_clock::now();
 	VkResult result = vkQueuePresentKHR(m_presentQueue, &presentInfo);
+	CemuDiagV2::g_vkPresentNs.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - diagPresentStart).count()), std::memory_order_relaxed);
+
+#if CEMU_THREAD_WATCHDOG
+    CemuWatchdog::Touch(CemuWatchdog::Renderer, CemuWatchdog::Loop);
+#endif
 	if (result < 0 && result != VK_ERROR_OUT_OF_DATE_KHR
 #if BOOST_PLAT_ANDROID
 		&& result != VK_ERROR_SURFACE_LOST_KHR

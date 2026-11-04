@@ -4,6 +4,8 @@
 #include "audio/IAudioAPI.h"
 //#include "ax.h"
 #include "config/CemuConfig.h"
+#include "util/CemuProfiling.h"
+#include "util/CemuThreadWatchdog.h"
 
 namespace snd_core
 {
@@ -171,7 +173,13 @@ namespace snd_core
 			cemu_assert(false);
 		}
 
+#if CEMU_PROFILING
+        const auto profilingAudioLockStart = CemuProfiling::Clock::now();
+#endif
 		std::shared_lock lock(g_audioMutex);
+#if CEMU_PROFILING
+        CemuProfiling::AudioMutexWait().Record(1, CemuProfiling::ElapsedNs(profilingAudioLockStart));
+#endif
 
 		const uint32 channels = g_tvAudio ? g_tvAudio->GetChannels() : AX_TV_CHANNEL_COUNT;
 		sint16* outputChannel = tempTVChannelData + AX_SAMPLES_PER_3MS_48KHZ * tempAudioBlockCounter * channels;
@@ -307,7 +315,13 @@ namespace snd_core
 			cemu_assert(false);
 		}
 
+#if CEMU_PROFILING
+        const auto profilingAudioLockStart = CemuProfiling::Clock::now();
+#endif
 		std::shared_lock lock(g_audioMutex);
+#if CEMU_PROFILING
+        CemuProfiling::AudioMutexWait().Record(1, CemuProfiling::ElapsedNs(profilingAudioLockStart));
+#endif
 
 		const uint32 channels = g_padAudio ? g_padAudio->GetChannels() : AX_DRC_CHANNEL_COUNT;
 		sint16* outputChannel = tempDRCChannelData + AX_SAMPLES_PER_3MS_48KHZ * tempDRCAudioBlockCounter * channels;
@@ -477,6 +491,9 @@ namespace snd_core
 	// called periodically to check for AX updates
 	void AXOut_update()
 	{
+#if CEMU_PROFILING
+        CemuProfiling::ScopedTimer profilingAudioUpdateTimer(CemuProfiling::AudioUpdate());
+#endif
 		constexpr static auto kTimeout = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::milliseconds(((IAudioAPI::kBlockCount * 3) / 4) * (AX_FRAMES_PER_GROUP * 3)));
 		constexpr static auto kWaitDuration = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::milliseconds(3));
 		constexpr static auto kWaitDurationFast = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::microseconds(2900));

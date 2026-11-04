@@ -291,7 +291,6 @@ struct AArch64GenContext_t : CodeGenerator
 template<std::derived_from<VRegSc> T>
 T fpReg(const IMLReg& imlReg)
 {
-	cemu_assert_debug(imlReg.GetRegFormat() == IMLRegFormat::F64);
 	auto regId = imlReg.GetRegID();
 	cemu_assert_debug(regId >= IMLArchAArch64::PHYSREG_FPR_BASE && regId < IMLArchAArch64::PHYSREG_FPR_BASE + IMLArchAArch64::PHYSREG_FPR_COUNT);
 	return T(regId - IMLArchAArch64::PHYSREG_FPR_BASE);
@@ -1169,7 +1168,9 @@ bool AArch64GenContext_t::fpr_load(IMLInstruction* imlInstruction, bool indexed)
 		}
 		else
 		{
-			fcvt(dataDReg, dataSReg);
+			uint32_t sIdx = static_cast<uint32_t>(dataSReg.getIdx());
+			uint32_t dIdx = static_cast<uint32_t>(dataDReg.getIdx());
+			dd(0x1E22C000u | (sIdx << 5) | dIdx);
 		}
 	}
 	else if (mode == PPCREC_FPR_LD_MODE_DOUBLE)
@@ -1212,7 +1213,11 @@ bool AArch64GenContext_t::fpr_store(IMLInstruction* imlInstruction, bool indexed
 		}
 		else
 		{
-			fcvt(TEMP_FPR.SReg, dataDReg);
+			{
+				uint32_t sIdx = static_cast<uint32_t>(TEMP_FPR.SReg.getIdx());
+				uint32_t dIdx = static_cast<uint32_t>(dataDReg.getIdx());
+				dd(0x1E624000u | (dIdx << 5) | sIdx);
+			}
 			fmov(TEMP_GPR2.WReg, TEMP_FPR.SReg);
 		}
 		rev(TEMP_GPR2.WReg, TEMP_GPR2.WReg);
@@ -1271,7 +1276,11 @@ void AArch64GenContext_t::fpr_r_r(IMLInstruction* imlInstruction)
 		{
 			fmov(regFprSReg, gpReg<WReg>(imlRegA));
 			// float to double
-			fcvt(regFprDReg, regFprSReg);
+			{
+				uint32_t sIdx = static_cast<uint32_t>(regFprSReg.getIdx());
+				uint32_t dIdx = static_cast<uint32_t>(regFprDReg.getIdx());
+				dd(0x1E22C000u | (sIdx << 5) | dIdx);
+			}
 		}
 		else if (imlRegA.GetRegFormat() == IMLRegFormat::I64)
 		{
@@ -1325,7 +1334,17 @@ void AArch64GenContext_t::fpr_r_r_r(IMLInstruction* imlInstruction)
 
 	if (imlInstruction->operation == PPCREC_IML_OP_FPR_MULTIPLY)
 	{
-		fmul(regR, regA, regB);
+		if (imlInstruction->op_fpr_r_r_r.regR.GetRegFormat() == IMLRegFormat::F32)
+		{
+			SReg sR = fpReg<SReg>(imlInstruction->op_fpr_r_r_r.regR);
+			SReg sA = fpReg<SReg>(imlInstruction->op_fpr_r_r_r.regA);
+			SReg sB = fpReg<SReg>(imlInstruction->op_fpr_r_r_r.regB);
+			fmul(sR, sA, sB);
+		}
+		else
+		{
+			fmul(regR, regA, regB);
+		}
 	}
 	else if (imlInstruction->operation == PPCREC_IML_OP_FPR_ADD)
 	{
@@ -1387,14 +1406,26 @@ void AArch64GenContext_t::fpr_r(IMLInstruction* imlInstruction)
 	else if (imlInstruction->operation == PPCREC_IML_OP_FPR_ROUND_TO_SINGLE_PRECISION_BOTTOM)
 	{
 		// convert to 32bit single
-		fcvt(regRSReg, regRDReg);
+		{
+			uint32_t sIdx = static_cast<uint32_t>(regRSReg.getIdx());
+			uint32_t dIdx = static_cast<uint32_t>(regRDReg.getIdx());
+			dd(0x1E624000u | (dIdx << 5) | sIdx);
+		}
 		// convert back to 64bit double
-		fcvt(regRDReg, regRSReg);
+		{
+			uint32_t sIdx = static_cast<uint32_t>(regRSReg.getIdx());
+			uint32_t dIdx = static_cast<uint32_t>(regRDReg.getIdx());
+			dd(0x1E22C000u | (sIdx << 5) | dIdx);
+		}
 	}
 	else if (imlInstruction->operation == PPCREC_IML_OP_FPR_EXPAND_F32_TO_F64)
 	{
 		// convert bottom to 64bit double
-		fcvt(regRDReg, regRSReg);
+		{
+			uint32_t sIdx = static_cast<uint32_t>(regRSReg.getIdx());
+			uint32_t dIdx = static_cast<uint32_t>(regRDReg.getIdx());
+			dd(0x1E22C000u | (sIdx << 5) | dIdx);
+		}
 	}
 	else
 	{

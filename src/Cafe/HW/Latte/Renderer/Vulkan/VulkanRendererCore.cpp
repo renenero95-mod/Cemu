@@ -1,4 +1,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
+#include "util/CemuDiagV2.h"
+#include "util/CemuProfiling.h"
+#include "util/CemuThreadWatchdog.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/LatteTextureVk.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.h"
@@ -1452,6 +1455,9 @@ void VulkanRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32
 	if (m_state.currentPipeline != vkObjPipeline->GetPipeline())
 	{
 		vkCmdBindPipeline(m_state.currentCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vkObjPipeline->GetPipeline());
+#if CEMU_PROFILING
+        CemuProfiling::PipelineChanges().AddItems();
+#endif
 		vkObjPipeline->flagForCurrentCommandBuffer();
 		m_state.currentPipeline = vkObjPipeline->GetPipeline();
 		// depth bias
@@ -1602,6 +1608,10 @@ void VulkanRenderer::draw_endSequence()
 		LatteRenderTarget_trackUpdates();
 	bool hasReadback = LatteTextureReadback_Update();
 	m_recordedDrawcalls++;
+	CemuDiagV2::g_vkDrawCount.fetch_add(1, std::memory_order_relaxed);
+#if CEMU_PROFILING
+    CemuProfiling::Drawcalls().AddItems();
+#endif
 	if (m_recordedDrawcalls >= m_submitThreshold || hasReadback)
 	{
 		SubmitCommandBuffer();

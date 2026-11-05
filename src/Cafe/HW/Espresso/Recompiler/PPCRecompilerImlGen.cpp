@@ -2370,6 +2370,10 @@ bool PPCRecompiler_decodePPCInstruction(ppcImlGenContext_t* ppcImlGenContext)
 			if (!PPCRecompilerImlGen_STORE_INDEXED(ppcImlGenContext, opcode, 8, true, false))
 				unsupportedInstructionFound = true;
 			break;
+		case 232: // mtspr variant (XO=232)
+			if (PPCRecompilerImlGen_MTSPR(ppcImlGenContext, opcode) == false)
+				unsupportedInstructionFound = true;
+			break;
 		case 234:
 			if (PPCRecompilerImlGen_ADDME(ppcImlGenContext, opcode) == false)
 				unsupportedInstructionFound = true;

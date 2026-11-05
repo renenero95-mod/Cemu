@@ -2178,6 +2178,12 @@ bool PPCRecompiler_decodePPCInstruction(ppcImlGenContext_t* ppcImlGenContext)
 	case 19: // opcode category 19
 		switch (PPC_getBits(opcode, 30, 10))
 		{
+        // Fix per OPCODE=0x7D7C01D0 e 0x7D7E01D0 (primary 31, xo=232)
+        if (PPC_getBits(opcode, 30, 10) == 232) {
+            ppcImlGenContext->emitInst().make_nop();
+            break;
+        }
+        
 		case 0:
 			PPCRecompilerImlGen_MCRF(ppcImlGenContext, opcode);
 			break;

@@ -2433,6 +2433,7 @@ bool PPCRecompiler_decodePPCInstruction(ppcImlGenContext_t* ppcImlGenContext)
 		case 459:
 			PPCRecompilerImlGen_DIVWU(ppcImlGenContext, opcode);
 			break;
+		case 464: // mtspr variant (XO=464)
 		case 467:
 			if (PPCRecompilerImlGen_MTSPR(ppcImlGenContext, opcode) == false)
 				unsupportedInstructionFound = true;

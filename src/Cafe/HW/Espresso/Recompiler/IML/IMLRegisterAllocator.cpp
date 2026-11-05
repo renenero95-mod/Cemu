@@ -1701,7 +1701,7 @@ void PPCRecRA_followFlowAndExtendRanges(IMLRegisterAllocatorContext& ctx, IMLSeg
 void IMLRA_MergeCloseAbstractRanges(IMLRegisterAllocatorContext& ctx)
 {
 	size_t segmentCount = ctx.deprGenContext->segmentList2.size();
-	if (segmentCount > 1200) { cemuLog_log(LogType::Force, "[MERGE CAP] skip ({} segments)", segmentCount); return; }
+	if (segmentCount > 1000) { cemuLog_log(LogType::Force, "[MERGE CAP] skip ({} segments)", segmentCount); return; }
 	auto startT = std::chrono::steady_clock::now();
 	for (size_t s = 0; s < segmentCount; s++)
 	{

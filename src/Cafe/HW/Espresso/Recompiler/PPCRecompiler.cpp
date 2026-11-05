@@ -613,6 +613,9 @@ static void PPCRecompiler_profileReportIfDue()
 void PPCRecompiler_thread()
 {
 	SetThreadName("PPCRecompiler");
+#ifdef __linux__
+	nice(10); // Lower priority for JIT compiler to avoid starving emulation
+#endif
     cemuLog_log(LogType::Force, "[WATCHDOG CALLSITE] PPCRecompiler_thread reached");
     const bool watchdogStarted = CemuWatchdog::Start();
     cemuLog_log(LogType::Force, "[WATCHDOG CALLSITE] Start returned {}", watchdogStarted);

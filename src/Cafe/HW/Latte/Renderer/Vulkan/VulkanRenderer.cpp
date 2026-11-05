@@ -3107,7 +3107,11 @@ void VulkanRenderer::SwapBuffer(bool mainWindow)
     CemuWatchdog::Touch(CemuWatchdog::Renderer, CemuWatchdog::Present);
 #endif
 	CemuDiagV2::g_vkPresentCount.fetch_add(1, std::memory_order_relaxed);
-	if(!AcquireNextSwapchainImage(mainWindow))
+	auto tAcq = std::chrono::steady_clock::now();
+	bool acqOk = AcquireNextSwapchainImage(mainWindow);
+	auto acqMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tAcq).count();
+	if (acqMs > 50) cemuLog_log(LogType::Force, "[PRESENT SLOW] Acquire={}ms", acqMs);
+	if(!acqOk)
 		return;
 
 	auto& chainInfo = GetChainInfo(mainWindow);
@@ -3127,10 +3131,16 @@ void VulkanRenderer::SwapBuffer(bool mainWindow)
 	cemu_assert_debug(m_numSubmittedCmdBuffers > 0);
 
 	// wait for the previous frame to finish rendering
+	auto tWait = std::chrono::steady_clock::now();
 	WaitCommandBufferFinished(m_commandBufferIDOfPrevFrame);
+	auto waitMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tWait).count();
+	if (waitMs > 50) cemuLog_log(LogType::Force, "[PRESENT SLOW] CmdBufFinish={}ms", waitMs);
 	m_commandBufferIDOfPrevFrame = currentFrameCmdBufferID;
 
+	auto tFence = std::chrono::steady_clock::now();
 	chainInfo.WaitAvailableFence();
+	auto fenceMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tFence).count();
+	if (fenceMs > 50) cemuLog_log(LogType::Force, "[PRESENT SLOW] ChainFence={}ms", fenceMs);
 
 	VkPresentIdKHR presentId = {};
 

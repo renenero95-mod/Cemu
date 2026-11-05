@@ -138,7 +138,7 @@ XMLConfigParser CemuConfig::Load(XMLConfigParser& parser)
 	userDisplayGamma = graphic.get("UserDisplayGamma", 2.2f);
 	if(userDisplayGamma < 0)
 		userDisplayGamma = 2.2f;
-	gx2drawdone_sync = graphic.get("GX2DrawdoneSync", true);
+	gx2drawdone_sync = graphic.get("GX2DrawdoneSync", false);
 	upscale_filter = graphic.get("UpscaleFilter", kBicubicHermiteFilter);
 	downscale_filter = graphic.get("DownscaleFilter", kLinearFilter);
 	fullscreen_scaling = graphic.get("FullscreenScaling", kKeepAspectRatio);

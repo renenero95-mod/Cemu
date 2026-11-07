@@ -71,6 +71,17 @@ uint32 ELF_LoadFromMemory(uint8* elfData, sint32 size, const char* name)
 		uint32 shAddr = (uint32)sectionTable[i].shAddr;
 		uint32 shSize = (uint32)sectionTable[i].shSize;
 		uint32 shOffset = (uint32)sectionTable[i].shOffset;
+
+		// --- PPC PRE-EXECUTION ANALYZER HOOK ---
+		if ((sectionTable[i].shFlags & 0x00000004) && (sectionTable[i].shType != 0x00000008) && shSize > 0) {
+			PPCPreExecutionAnalyzer::ScanExecutableSection(
+				shAddr,
+				(const uint8_t*)(elfData + shOffset),
+				shSize,
+				"ELF"
+			);
+		}
+		// ---------------------------------------
 		uint32 shType = (uint32)sectionTable[i].shType;
 		uint32 shFlags = (uint32)sectionTable[i].shFlags;
 

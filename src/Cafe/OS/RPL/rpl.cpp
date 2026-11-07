@@ -3,6 +3,7 @@
 #include "Cafe/OS/common/OSCommon.h"
 #include "Cafe/Filesystem/fsc.h"
 #include "Cafe/OS/RPL/rpl.h"
+#include "Cafe/HW/Espresso/Analyzer/PPCPreExecutionAnalyzer.h"
 #include "Cafe/OS/RPL/rpl_structs.h"
 #include "Cafe/OS/RPL/rpl_symbol_storage.h"
 #include "util/VirtualHeap/VirtualHeap.h"
@@ -439,6 +440,17 @@ bool RPLLoader_LoadSingleSection(RPLModule* rplLoaderContext, sint32 sectionInde
 		rplLoaderContext->hasError = true;
 		return false;
 	}
+
+	// --- PPC PRE-EXECUTION ANALYZER HOOK ---
+	if ((section->flags & 0x00000004) && (section->type != 0x00000008)) {
+		PPCPreExecutionAnalyzer::ScanExecutableSection(
+			section->virtualAddress, 
+			uncompressedSection->sectionData.data(), 
+			uncompressedSection->sectionData.size(), 
+			"RPL"
+		);
+	}
+	// ---------------------------------------
 
 	// copy to mapped address
 	if(section->virtualAddress < regionMappingInfo->baseAddress || (section->virtualAddress + uncompressedSection->sectionData.size()) > regionMappingInfo->endAddress)

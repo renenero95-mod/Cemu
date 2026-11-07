@@ -23,6 +23,7 @@
 #include "util/CemuProfiling.h"
 #include "util/CemuThreadWatchdog.h"
 #include "util/CemuDiagV2.h"
+#include <unordered_map>
 
 #define PPCREC_FORCE_SYNCHRONOUS_COMPILATION	0 // if 1, then function recompilation will block and execute on the thread that called PPCRecompiler_visitAddressNoBlock
 #define PPCREC_LOG_RECOMPILATION_RESULTS		0
@@ -673,6 +674,16 @@ void PPCRecompiler_thread()
 				continue;
 			}
 			PPCRecompilerState.recompilerSpinlock.unlock();
+
+			// --- JIT THRASHING RATE LIMIT ---
+			// Se lo stesso indirizzo viene ricompilato troppe volte in fretta, diamo respiro alla GPU
+			static std::unordered_map<MPTR, int> s_thrashMap;
+			if (++s_thrashMap[enterAddress] > 20) {
+				cemuLog_log(LogType::Force, "[JIT THRASH] Address 0x{:08X} recompiled >20 times, throttling...", enterAddress);
+				std::this_thread::sleep_for(std::chrono::milliseconds(2));
+				s_thrashMap[enterAddress] = 0; // reset dopo il throttling
+			}
+			// --------------------------------
 
 			PPCRecompiler_recompileAtAddress(enterAddress);
 			if(s_recompilerThreadStopSignal)

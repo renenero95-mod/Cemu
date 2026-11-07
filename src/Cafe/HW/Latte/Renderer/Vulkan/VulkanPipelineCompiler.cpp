@@ -1058,7 +1058,7 @@ bool PipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool show
 	else
 	{
 		cemuLog_log(LogType::Force, "Failed to create graphics pipeline. Error {}", (sint32)result);
-		cemu_assert_debug(false);
+		// REMOVED_ASSERT: Non crashare se la cache della pipeline è corrotta (es. da un freeze precedente)
 		return true; // true indicates that caller should no longer attempt to compile this pipeline again
 	}
 	vkRenderer->m_pipeline_cache_semaphore.notify();

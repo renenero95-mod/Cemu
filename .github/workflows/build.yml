@@ -1,0 +1,48 @@
+name: Build Cemu v7.0
+on:
+  workflow_dispatch: 
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+          cmdline-tools-version: 'latest'
+
+      - name: Install NDK
+        run: |
+          echo "y" | sdkmanager --install "ndk;26.1.10909125"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> $GITHUB_ENV
+
+      - name: Build with Gradle
+        run: |
+          cd src/android
+          
+          # Cambia applicationId
+          sed -i 's/applicationId = "info.cemu.cemu"/applicationId = "com.cemu.aimod.debug"/' app/build.gradle.kts 2>/dev/null || true
+          sed -i 's/applicationId "info.cemu.cemu"/applicationId "com.cemu.aimod.debug"/' app/build.gradle.kts 2>/dev/null || true
+          sed -i 's/applicationId "info.cemu.cemu"/applicationId "com.cemu.aimod.debug"/' app/build.gradle 2>/dev/null || true
+          
+          chmod +x gradlew
+          # Lasciamo che usi la sua versione di Gradle (9.3.1)
+          ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cemu-v7.0-APK
+          path: src/android/app/build/outputs/apk/debug/*.apk

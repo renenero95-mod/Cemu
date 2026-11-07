@@ -1,4 +1,4 @@
-name: Build Cemu v7.0
+name: Build Cemu v7.0 APK
 on:
   workflow_dispatch: 
 
@@ -31,14 +31,11 @@ jobs:
       - name: Build with Gradle
         run: |
           cd src/android
-          
-          # Cambia applicationId
           sed -i 's/applicationId = "info.cemu.cemu"/applicationId = "com.cemu.aimod.debug"/' app/build.gradle.kts 2>/dev/null || true
           sed -i 's/applicationId "info.cemu.cemu"/applicationId "com.cemu.aimod.debug"/' app/build.gradle.kts 2>/dev/null || true
           sed -i 's/applicationId "info.cemu.cemu"/applicationId "com.cemu.aimod.debug"/' app/build.gradle 2>/dev/null || true
           
           chmod +x gradlew
-          # Lasciamo che usi la sua versione di Gradle (9.3.1)
           ./gradlew assembleDebug
 
       - name: Upload APK
